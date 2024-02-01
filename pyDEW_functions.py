@@ -582,30 +582,13 @@ def DFtoReactant(series, system):
         
     # This single-liner removes all the duplicates in the list (which can happen)
     reactantsList = [i for n, i in enumerate(reactantsList) if i not in reactantsList[n + 1:]]
-    return reactantsList
-
-
-def removeNaNReactants(reactants):
-    """
-    Get rid of nans and zeros in a reactants list.
     
-    INPUTS
-    ------
-    reactants : list of dictionaries
-        pyDEW.Reaction mineral input
-        
-    OUTPUTS
-    -------
-    reactants : list of dictionaries
-        pyDEW.Reaction mineral input
-
-    """
-
+    # Get rid of any NaNs and zeros
     popList = []
-    for i in range(len(reactants)):
-        if np.isnan(reactants[i]['moles']):
+    for i in range(len(reactantsList)):
+        if np.isnan(reactantsList[i]['moles']):
             popList.append(i)
-        elif reactants[i]['moles'] == 0.0:
+        elif reactantsList[i]['moles'] == 0.0:
             popList.append(i)
-    reactants = [i for j, i in enumerate(reactants) if j not in popList]
-    return reactants
+    reactantsList = [i for j, i in enumerate(reactantsList) if j not in popList]
+    return reactantsList
