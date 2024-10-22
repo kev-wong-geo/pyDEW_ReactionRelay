@@ -1,5 +1,5 @@
 # Functions to subdivide relay function.
-# Last updated: 31/05/2024, KW
+# Last updated to include things for fluid and solvent mass: 22/10/2024, KW
 
 import numpy as np
 import pyDEW
@@ -131,7 +131,8 @@ def createHybridFluid(proportions, P, T, database='EQ3_pickups_GS.xlsx',
     return exportDict, exportfO2
 
 
-def failedReactionOutput(reactant, fluid, fluidMass, system, P, T, errorTag=0):
+def failedReactionOutput(reactant, fluid, solventMass, system, P, T, errorTag=0,
+                         d0file='working/data0'):
     """
     Function to return a compatible output if the reaction has returned an error.
 
@@ -141,8 +142,8 @@ def failedReactionOutput(reactant, fluid, fluidMass, system, P, T, errorTag=0):
         pyDEW.Reaction mineral input
     fluid : pyDEW.Fluid object
         pyDEW.Fluid object
-    fluidMass : float
-        mass of fluid in grams
+    solventMass : float
+        mass of solvent in grams
     system : pyDEW.System object
         pyDEW.System for calculations
     P : float
@@ -151,6 +152,8 @@ def failedReactionOutput(reactant, fluid, fluidMass, system, P, T, errorTag=0):
         temperature in K
     errorTag : int or None
         tag for error messages. 0: reaction has failed, 1: fluid-rock ratio too low
+    d0file : string
+        path to data0 file
 
     RETURNS
     -------
@@ -164,7 +167,9 @@ def failedReactionOutput(reactant, fluid, fluidMass, system, P, T, errorTag=0):
     """
 
     initialReactantMass = pDF.findReactantMass(reactant, system)
-    initialFRR = fluidMass / initialReactantMass
+    initialFluidMass = pDF.findFluidMass(fluid, solventMass, inputType='Fluid',
+                                         d0file='working/data0')
+    initialFRR = solventMass / initialReactantMass
     if errorTag == 0:
         errorMessage = 'pyDEW.Reaction has failed for undetermined reason'
     elif errorTag == 1:
@@ -184,8 +189,10 @@ def failedReactionOutput(reactant, fluid, fluidMass, system, P, T, errorTag=0):
         'final solid mass' : initialReactantMass,
         'final solid volume' : pDF.findReactantVolume(reactant, system, P, T),
         'final solid density' : pDF.findReactantDensity(reactant, system, P, T),
-        'initial fluid mass' : fluidMass,
-        'final fluid mass' : fluidMass,
+        'initial solvent mass' : solventMass,
+        'final solvent mass' : solventMass,
+        'initial fluid mass' : initialFluidMass,
+        'final fluid mass' : initialFluidMass,
         'initial FRR' : initialFRR,
         'final FRR' : initialFRR,
         'initial fluid fO2' : fluid.fO2,
@@ -211,8 +218,8 @@ def failedReactionOutput(reactant, fluid, fluidMass, system, P, T, errorTag=0):
     return outputDict
 
 
-def reactionByMass(reactant, fluid, fluidMass, system, P, T, outputFile='working/output',
-                   tabFile='working/tab', **kwargs):
+def reactionByMass(reactant, fluid, solventMass, system, P, T, outputFile='working/output',
+                   tabFile='working/tab', d0file='working/data0', **kwargs):
     """
     Function to perform a pyDEW calculation by mass (instead of relative to 1 kg of fluid).
 
@@ -222,7 +229,7 @@ def reactionByMass(reactant, fluid, fluidMass, system, P, T, outputFile='working
         pyDEW.Reaction mineral input
     fluid : pyDEW.Fluid object
         pyDEW.Fluid object - this is kept separate for debugging purposes
-    fluidMass : float
+    solventMass : float
         mass of fluid in grams
     system : pyDEW.System object
         pyDEW.System for calculations
@@ -234,6 +241,8 @@ def reactionByMass(reactant, fluid, fluidMass, system, P, T, outputFile='working
         path to pyDEW.Reaction output file
     tabFile : string
         path to pyDEW.Reaction tab file
+    d0file : string
+        path to data0 file
     **kwargs : optional keyword arguments
         keyword arguments for pyDEW.Reaction
 
@@ -252,13 +261,14 @@ def reactionByMass(reactant, fluid, fluidMass, system, P, T, outputFile='working
     #### PREAMBLE ####
     # Obtain mass of reactant and FRR, recalculate reactant relative to 1 kg of reactant fluid
     initialReactantMass = pDF.findReactantMass(reactant, system)
-    initialFRR = fluidMass / initialReactantMass
+    initialFluidMass = pDF.findFluidMass(fluid, solventMass, inputType='Fluid', d0file=d0file)
+    initialFRR = solventMass / initialReactantMass
     workingReactant1kg = pDF.reactantToFR(reactant, initialFRR, system)
-    solidModulate  = fluidMass / 1000.0  # correction factor for mass scaling
     initialReactant1kgMoles = np.sum([j['moles'] for j in workingReactant1kg])
     dewReaction = pyDEW.Reaction(fluid, T, P, workingReactant1kg, zimax=initialReactant1kgMoles,
                                  calculation_mode='titration')
-
+    # correction factor for mass scaling - note that this is often not 1 kg
+    solidModulate  = solventMass / pDF.findSolventMass(tabFile)[0]
     # Sometimes an empty dataframe is returned - this flags it up
     if isinstance(dewReaction.minerals, pd.DataFrame) == False:
         raise pyDEW.core.RunError('Mineral output is not a pd.DataFrame')
@@ -284,7 +294,8 @@ def reactionByMass(reactant, fluid, fluidMass, system, P, T, outputFile='working
     lastValidOutputLogZi = lastValidSpeciesLogZi
     lastValidOutputLogZiIndex = lastValidSpeciesLogZiIndex
 
-    # Get dataframe of last solid (from 1 kg fluid), account for repeated solid solution endmembers
+    # Get dataframe of last solid (from 1 kg solvent), account for repeated solid solution
+    # endmembers
     lastSolid1kg = lastReactionDF[lastReactionDF['log zi'] == lastValidOutputLogZi]
     lastSolid1kgHeaders = lastSolid1kg['phase/end-member'].tolist()
     lastSolid1kgValues = lastSolid1kg['moles'].tolist()
@@ -315,7 +326,14 @@ def reactionByMass(reactant, fluid, fluidMass, system, P, T, outputFile='working
 
     # Convert pandas output into reactant list of dictionaries, find fluid mass change from 1 kg
     lastSolid1kgProduct = pDF.DFtoReactant(lastSolid1kgDF.iloc[0], system)
-    lastFluid1kgMass = 1000.0 * pDF.findFluidMassChange(tabFile, index=lastValidOutputLogZiIndex)
+
+    workingReactant1kgMass = pDF.findReactantMass(workingReactant1kg, system)
+    lastSolid1kgMass = pDF.findReactantMass(lastSolid1kgProduct, system)
+    lastSolvent1kgMass = pDF.findSolventMass(tabFile)[1]
+    lastFluid1kgOMolal = pDF.findFluidOMolal(logZiValue=lastValidSpeciesLogZi)
+    lastFluid1kgMass = pDF.findFluidMass(dewReaction.elements.loc[lastValidElementsLogZi],
+                                         lastSolvent1kgMass, inputType='Series',
+                                         d0file=d0file, Omolal=lastFluid1kgOMolal)
 
     #### FORMAT RELATIVE TO INITIAL FLUID MASS (ADJUSTED) ####
     # Multiply product solid values by solidModulate to get the true solid mass
@@ -326,6 +344,7 @@ def reactionByMass(reactant, fluid, fluidMass, system, P, T, outputFile='working
         adjustedLastSolidProduct.append(j)
     adjustedLastSolidDF = pDF.reactantToDF(adjustedLastSolidProduct, system)
     adjustedLastSolidDF.reset_index().T.drop_duplicates().T
+    adjustedLastSolventMass = lastSolvent1kgMass * solidModulate
     adjustedLastFluidMass = lastFluid1kgMass * solidModulate
     adjustedLastSolidMass = pDF.findReactantMass(adjustedLastSolidProduct, system)
     adjustedLastSolidVolume = pDF.findReactantVolume(adjustedLastSolidProduct, system, P, T)
@@ -347,7 +366,9 @@ def reactionByMass(reactant, fluid, fluidMass, system, P, T, outputFile='working
         'final solid mass' : adjustedLastSolidMass,
         'final solid volume' : adjustedLastSolidVolume,
         'final solid density' : adjustedLastSolidDensity,
-        'initial fluid mass' : fluidMass,
+        'initial solvent mass' : solventMass,
+        'final solvent mass' : adjustedLastSolventMass,
+        'initial fluid mass' : initialFluidMass,
         'final fluid mass' : adjustedLastFluidMass,
         'initial FRR' : initialFRR,
         'final FRR' : finalFRR,
@@ -569,8 +590,8 @@ def createHeterogeneousInput(reactants, system, reactantMasses, intervals, press
             rows = splitFractions[0]
         else:
             rows = splitFractions[i] - splitFractions[i-1]
-        reactant = pDF.reactantToMass(reactants[i], reactantMasses[i], system)
-        reactantDF = pDF.reactantToDF(reactants[i], system)
+        reactantMass = pDF.reactantToMass(reactants[i], reactantMasses[i], system)
+        reactantDF = pDF.reactantToDF(reactantMass, system)
         inputSubDF.append(pd.concat([reactantDF] * rows))
     inputDF = pd.concat(inputSubDF)
     inputDF['Pressure (bar)'] = pressures
@@ -611,10 +632,11 @@ def relayInputFromOutput(outputFile, time):
 
 
 def decompressionRelay(startingColumn, startingFluid, startingfO2, system, timesteps=10,
-                       startingTime=0, fluidMass=None, startingFRR=1.0, terminalFRR=0.1,
+                       startingTime=0, solventMass=None, startingFRR=1.0, terminalFRR=0.1,
                        molalityLimit=-18.0, exportPath='data/export',
                        outputToRead='working/output', tabToRead='working/tab',
-                       startFromFile=None, combinedOutput=True, debugLabels=False, **kwargs):
+                       startFromFile=None, combinedOutput=True,
+                       debugLabels=False, **kwargs):
     """
     Decompression relay as a function of time. This models a column of rock getting flushed with a
     fluid periodically from the base of the rock column.
@@ -636,8 +658,8 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, times
         number of times to flush our solid with the fluid. Default is 10
     startingTime : int
         integer representing time at the start of the reaction. Default is 0
-    fluidMass : float or None
-        starting fluid mass entering the base of the system, in g. If None, use startingFRR.
+    solventMass : float or None
+        starting solvent mass entering the base of the system, in g. If None, use startingFRR.
         Supercedes startingFRR input. Default is None
     startingFRR : float
         fluid-rock ratio (FRR) at the column base between first rock and fluid. Default is 1.0
@@ -704,20 +726,20 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, times
             ##### FLUID #####
             # At start, get parameters from the input, else use results from last reaction
             if n == 0:
-                if fluidMass is None:
+                if solventMass is None:
                     workingFRR = startingFRR
                     if t == 0:
-                        slabFluidMass = startingFRR * pDF.findReactantMass(workingReactant, system)
+                        slabSolventMass = startingFRR * pDF.findReactantMass(workingReactant, system)
                 else:
-                    workingFRR = fluidMass / pDF.findReactantMass(workingReactant, system)
-                    slabFluidMass = fluidMass
-                workingFluidMass = slabFluidMass
+                    workingFRR = solventMass / pDF.findReactantMass(workingReactant, system)
+                    slabSolventMass = solventMass
+                workingSolventMass = slabSolventMass
                 workingFluidMolalities = startingFluid
                 workingfO2 = startingfO2
             else:
                 reactionInput = deepcopy(reactionOutput)
                 workingFRR = reactionInput['Properties']['final FRR']
-                workingFluidMass = reactionInput['Properties']['final fluid mass']
+                workingSolventMass = reactionInput['Properties']['final solvent mass']
                 workingfO2 = reactionInput['Properties']['final fluid fO2']
                 workingFluidMolalities = formatFluid(reactionInput['Elements'])
 
@@ -730,6 +752,7 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, times
 
             # Suppress H2CO3(AQ) - shouldn't matter according to Guillaume
             nxmods = [['H2CO3(AQ)', 0, -1, 0]]
+            errorTag = 0
 
             ##### FLUID #####
             try:
@@ -745,7 +768,6 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, times
                 shutil.copy('working/output', f'working/debug/output_EQ3_{t}_{n}')
 
             ##### REACTION #####
-            errorTag = 0
             try:
                 # If we are below our FRR threshold, flag error
                 if workingFRR < terminalFRR:
@@ -759,7 +781,7 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, times
                     raise pyDEW.core.RunError(errorMessage)
 
                 reactionOutput = reactionByMass(workingReactant, workingFluid,
-                                                workingFluidMass, system,
+                                                workingSolventMass, system,
                                                 workingP, workingT)
                 calculations+=1
             except (KeyError, pyDEW.core.RunError):
@@ -767,7 +789,7 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, times
                 if errorTag != 1  or errorTag != 2:
                     errorTag = 0
                 reactionOutput = failedReactionOutput(workingReactant, workingFluid,
-                                                      workingFluidMass, system,
+                                                      workingSolventMass, system,
                                                       workingP, workingT, errorTag)
             if debugLabels:
                 shutil.copy('working/input', f'working/debug/input_EQ6_{t}_{n}')

@@ -1,5 +1,5 @@
-# Additional functions for volume percent calculations.
-# Last updated: 31/05/2024, KW
+# Additional functions for volume percent calculations: 31/05/24
+# Additional functions for element conservation and fluid mass calculations: 22/10/24
 
 import numpy as np
 import pyDEW
@@ -400,21 +400,23 @@ def findLastSolid(outputFile, system, P, T, notNaNRow=True):
     return reactants
 
 
-def findFluidMassChange(tabFile, index=-1):
+def findSolventMass(tabFile, index=-1):
     """
-    Function to find change in H2O mass before/after reaction.
+    Function to find  H2O solvent masses before/after reaction and the ratio between them. All
+    masses are presented in grams.
 
     PARAMETERS
     ----------
     tabfile : string
         path to pyDEW.Reaction tab file
     index : integer
-        index of fluid mass to compare to initial fluid mass. Default is -1 (final item)
+        index of solvent mass to compare to initial solvent mass. Default is -1 (final item)
 
     RETURNS
     -------
-    H2OChange : float
-        ratio of mass H2O after reaction to mass H2O before reaction
+    tuple
+        in order: mass of H2O solvent at start of reaction, mass of H2O solvent at end of reaction,
+        ratio of mass H2O solvent after reaction to mass H2O solvent before reaction
 
     """
 
@@ -465,7 +467,7 @@ def findFluidMassChange(tabFile, index=-1):
     pHData = pd.DataFrame(data=dataLines, columns=headers)
     H2Okg = pHData['kg h2o']
     H2OChange = H2Okg.iloc[index]/H2Okg.iloc[0]
-    return H2OChange
+    return 1000.0*H2Okg.iloc[0], 1000.0*H2Okg.iloc[index], H2OChange
 
 
 def reactantToDF(reactant, system):
@@ -1139,3 +1141,322 @@ def FMQ(P, T, database):
     # Change from ln to log10
     log10fO2 = lnfO2 / np.log(10)
     return log10fO2
+
+
+def getD0AtomicMass(d0file):
+    """
+    Extract atomic mass, oxide, and gravimetric factors from a data0 file.
+
+    PARAMETERS
+    ----------
+    d0file : string
+        path to data0 file
+
+    RETURNS
+    -------
+    df : pandas.DataFrame
+        DataFrame with atomic mass, oxide, and gravimetric factors
+    """
+
+    lookup1 = 'ELEMENTS, ATOMIC WEIGHTS, OXIDES, AND GRAVIMETRIC FACTORS'
+    lookup2 = 'temperatures'
+    file = open(d0file, 'r')
+    for num, line in enumerate(file):
+        if lookup1 in line:
+            startNumber = num
+        elif lookup2 in line:
+            endNumber = num
+            break
+    file.close()
+    beginHeaders = startNumber+1
+    headers = linecache.getline(d0file, beginHeaders).strip().split(', ')
+    headers[3] = headers[3].replace('AND ','')
+
+    start = startNumber+2
+    end = endNumber+1
+    dataLines = []
+    for j in range(start, end):
+        dataLine = linecache.getline(d0file, j).strip().split(' ')
+        dataLine = [k.strip() for k in dataLine if k != '']
+        if dataLine == []:
+            continue
+        else:
+            dataLines.append(dataLine)
+    df = pd.DataFrame(dataLines)
+    df.columns = headers
+    df.set_index('ELEMENTS', inplace=True)
+    df['ATOMIC WEIGHTS'] = df['ATOMIC WEIGHTS'].astype(float)
+    df['GRAVIMETRIC FACTORS'] = df['GRAVIMETRIC FACTORS'].astype(float)
+    return df
+
+
+def listOfListSearch(searchList, searchString):
+    """
+    Return the index of a list in a list of lists if the list has a particular string within it.
+
+    PARAMETERS
+    ----------
+    searchList : list of lists
+        list of lists to query
+    searchString : string
+        string to query list of lists
+
+    RETURNS
+    -------
+    integer index of list within list of lists containing string
+    """
+    for x in searchList:
+        for y in x:
+            if searchString in y:
+                return searchList.index(x)
+
+
+def getD0MineralElements(d0file):
+    """
+    Get information on the elements comprising a mineral from the data0 file.
+
+    PARAMETERS
+    ----------
+    d0file : string
+        path to data0 file
+
+    RETURNS
+    -------
+    df : pandas.DataFrame
+        DataFrame of minerals (index) with elemental compositions (table contents, by number of
+        moles in that mineral endmember)
+    """
+
+    lookup1 = 'endit'
+
+    dataLines = []
+    minerals = []
+    totalStarts = []
+
+    # Open file, extract info, read file
+    file = open(d0file, 'r')
+    for num, line in enumerate(file):
+        lookup1Check = False
+        if lookup1 in line:
+            lookup1Check = True
+            totalStarts.append(num)
+        if lookup1Check == False:
+            pass
+    file.close()
+    start = totalStarts[0]+3
+    end = totalStarts[1]+1
+    dataLines = []
+    for j in range(start, end):
+        dataLine = linecache.getline(d0file, j).strip().split(' ')
+        dataLine = [k.strip() for k in dataLine if k != '']
+        if dataLine == []:
+            continue
+        else:
+            dataLines.append(dataLine)
+    divider = ['+----------------------------------------------------------------------------']
+    separators = [i for i, x in enumerate(dataLines) if x == divider]
+    series = []
+    for i in range(len(separators)):
+        if i == 0:
+            upperSeparator = 0
+            lowerSeparator = separators[i]
+        elif i == len(separators):
+            pass
+        else:
+            upperSeparator = separators[i-1]+1
+            lowerSeparator = separators[i]
+        subList = dataLines[upperSeparator:lowerSeparator]
+        minerals.append(subList[0][0])
+        elements1 = listOfListSearch(subList, 'CHEMICAL')
+        elements2 = listOfListSearch(subList, 'SPECIES')
+        elements = sum(subList[elements1+1:elements2], [])
+        elementsDict = dict(zip(elements[1::2], elements[::2]))
+        series.append(pd.Series(elementsDict))
+    df = pd.DataFrame(series)
+    df.index = minerals
+    df = df.fillna(0)
+    df = df.astype(float)
+    return df
+
+
+def countReactantElements(reactant, d0File='./working/data0'):
+    """
+    Count moles of elements forming a reactant.
+
+    PARAMETERS
+    ----------
+    reactant : list of dictionaries
+        pyDEW.Reaction mineral input
+    d0file : string
+        path to data0 file
+
+    RETURNS
+    -------
+    molesDict : dictionary
+        dictionary of moles of elements
+    """
+
+    referenceTable = getD0MineralElements(d0File)
+    # Get dictionary of moles for each endmember
+    minerals = []
+    moles = []
+    for i in reactant:
+        if 'composition' in i.keys():
+            SSmoles = i['moles']
+            endmembers = list(i['composition'].keys())
+            endmemberProportions = list(i['composition'].values())
+            for j in range(len(i['composition'].keys())):
+                minerals.append(endmembers[j])
+                moles.append(endmemberProportions[j] * SSmoles)
+        else:
+            minerals.append(i['reactant'])
+            moles.append(i['moles'])
+
+    returnSeries = []
+    # Now determine the elements
+    for i in range(len(minerals)):
+        queryMineral = minerals[i]
+        refSeries = referenceTable.loc[queryMineral]
+        returnSeries.append(refSeries * moles[i])
+    df = pd.DataFrame(returnSeries)
+    # Remove all zero rows
+    df = df.loc[:, (df != 0).any(axis=0)]
+    # Determine list of element moles
+    elements = df.columns.tolist()
+    elementMoles = []
+    for i in elements:
+        elementMoles.append(np.sum(df[i]))
+    molesDict = {elements[i]: elementMoles[i] for i in range(len(elements))}
+    return molesDict
+
+
+def countFluidElements(fluid, H2OMass, inputType='Fluid'):
+    """
+    Return a dictionary with the moles of elements in the fluid phase. This uses the 'molality'
+    table of a pyDEW.Fluid object.
+
+    PARAMETERS
+    ----------
+    fluid : pyDEW.Fluid object or pandas.Series
+        pyDEW object to determine elements from
+    H2OMass : float
+        mass of solvent (H2O) in the system in g
+    inputType : string
+        'Fluid' or 'Series' to determine fluid input. Default is 'Fluid'
+
+    RETURNS
+    -------
+    molesDict : dictionary
+        dictionary of moles of elements in fluid
+    """
+
+    if inputType == 'Fluid':
+        molalities = fluid.elemental_comp['molality']
+        elements = molalities.index.tolist()
+    elif inputType == 'Series':
+        molalities = [10**i for i in fluid]
+        elements = fluid.index.tolist()
+    moles = [i * H2OMass/1000 for i in molalities]
+    molesDict = {elements[i]: moles[i] for i in range(len(elements))}
+    molesDict = {k.upper() : v for k,v in molesDict.items()}
+    return molesDict
+
+
+def totalElements(a, b):
+    """
+    Quick function to add two dictionaries together element-wise.
+
+    PARAMETERS
+    ----------
+    a, b: dictionaries
+        dictionaries that may contain some common elements
+
+    RETURNS
+    -------
+    dictionary
+        dictionary of elements in a and b summed element-wise
+    """
+    return {i: a.get(i, 0) + b.get(i, 0) for i in set(a).union(b)}
+
+
+def findFluidMass(fluid, H2Omass, inputType='Fluid', d0file='working/data0', Omolal=None):
+    """
+    Function to find mass of the fluid from a pyDEW.Fluid object (NOT SOLVENT MASS).
+
+    PARAMETERS
+    ----------
+    fluid : pyDEW.Fluid object
+        pyDEW.Fluid object
+    H2OMass : float
+        mass of solvent (H2O) in the system in g
+    inputType : string
+        'Fluid' or 'Series' to determine fluid input. Default is 'Fluid'
+    d0file : string
+        path to data0 file
+    Omolal : float
+        O molality if inputType is 'Series'
+
+    RETURNS
+    -------
+    fluidMass : float
+        mass of fluid (H2O + species) in the system
+    """
+
+    fluidElements = countFluidElements(fluid, H2Omass, inputType=inputType)
+    d0atomicMasses = getD0AtomicMass(d0file)
+    fluidMass = 0
+
+    # mass = moles of elements * atomic masses of elements
+    for i in fluidElements:
+        fluidMass += fluidElements[i] * d0atomicMasses.loc[i]['ATOMIC WEIGHTS']
+    if inputType == 'Series':
+        fluidMass += Omolal * H2Omass/1000 * d0atomicMasses.loc['O']['ATOMIC WEIGHTS']
+    return fluidMass
+
+
+def findFluidOMolal(outputFile='working/output', logZiValue=None):
+    """
+    For some godforsaken reason the pyDEW.Reaction object does not include the molality of fluid
+    oxygen. This finds that.
+
+    PARAMETERS
+    ----------
+    outputFile : string
+        path to output file generated by EQ6. Default is 'working/output'
+    logZiValue : int
+        select a specific value from the output file based on logZi? Default is None
+
+    RETURNS
+    -------
+    df : pd.DataFrame
+        DataFrame with oxygen molality at every reaction progress
+    or float
+        value of oxygen molality at a given log reaction progress
+    """
+
+    lookup1 = 'log of reaction progress'
+    lookup2 = 'element totals for the aqueous phase'
+    logZi = []
+    OLineNumber = []
+    file = open(outputFile, 'r')
+    for num, line in enumerate(file):
+
+        # Lookup 1 is where we find our running reaction progress
+        if lookup1 in line:
+            logZi.append(float(line.split()[-1]))
+
+        # Lookup 2 is start of the elements
+        if lookup2 in line:
+            OLineNumber.append(num + 5)
+    file.close()
+    checkLines = [linecache.getline(outputFile, i).strip().split('  ') for i in OLineNumber]
+    molalities = [i[9] for i in checkLines]
+    outputDict = {'logZi' : logZi,
+                  'O molal' : molalities}
+    df = pd.DataFrame(outputDict)
+    if logZiValue != None:
+        dfSeries = df[df['logZi'] == logZiValue]
+        return float(dfSeries['O molal'].iloc[0])
+    else:
+        df['O molal'] = df['O molal'].astype(float)
+        return df
