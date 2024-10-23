@@ -1,4 +1,4 @@
-# pyDEW_TDR
+# pyDEW_ReactionRelay
 Time-decompression relay for pyDEW. Work in progress. Last updated 23/10/2024.
 
 ## Description
