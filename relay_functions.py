@@ -197,6 +197,8 @@ def failedReactionOutput(reactant, fluid, solventMass, system, P, T, errorTag=0,
         'final FRR' : initialFRR,
         'initial fluid fO2' : fluid.fO2,
         'final fluid fO2' : fluid.fO2,
+        'initial fluid pH' : fluid.pH,
+        'final fluid pH' : fluid.pH,
         'max log zi (pyDEW elements)' : -999.0,
         'max log zi (pyDEW species and DEW output)' : -999.0,
         'error' : errorMessage
@@ -215,6 +217,7 @@ def failedReactionOutput(reactant, fluid, solventMass, system, P, T, errorTag=0,
     outputDict['Elements'] = fluidElements
     outputDict['Species'] = fluidSpecies
     outputDict['Volumes'] = pDF.reactantToVolDF(reactant, system, P, T).iloc[0].to_dict()
+    outputDict['Produced'] = {}
     return outputDict
 
 
@@ -230,7 +233,7 @@ def reactionByMass(reactant, fluid, solventMass, system, P, T, outputFile='worki
     fluid : pyDEW.Fluid object
         pyDEW.Fluid object - this is kept separate for debugging purposes
     solventMass : float
-        mass of fluid in grams
+        mass of solvent in grams
     system : pyDEW.System object
         pyDEW.System for calculations
     P : float
@@ -267,8 +270,10 @@ def reactionByMass(reactant, fluid, solventMass, system, P, T, outputFile='worki
     initialReactant1kgMoles = np.sum([j['moles'] for j in workingReactant1kg])
     dewReaction = pyDEW.Reaction(fluid, T, P, workingReactant1kg, zimax=initialReactant1kgMoles,
                                  calculation_mode='titration')
+
     # correction factor for mass scaling - note that this is often not 1 kg
     solidModulate  = solventMass / pDF.findSolventMass(tabFile)[0]
+
     # Sometimes an empty dataframe is returned - this flags it up
     if isinstance(dewReaction.minerals, pd.DataFrame) == False:
         raise pyDEW.core.RunError('Mineral output is not a pd.DataFrame')
@@ -277,7 +282,7 @@ def reactionByMass(reactant, fluid, solventMass, system, P, T, outputFile='worki
 
     #### PROCESSING ####
     # Get maximum valid log zi and corresponding index
-    # Species and the eq6 output have different log zi to the elements
+    # Species (output) have different log zi to the elements (tab)
     lastValidElementsLogZi = dewReaction.elements.last_valid_index()
     lastValidElementsLogZiIndex = dewReaction.elements.index.get_loc(lastValidElementsLogZi)
     if not isinstance(lastValidElementsLogZiIndex, int):
@@ -331,7 +336,7 @@ def reactionByMass(reactant, fluid, solventMass, system, P, T, outputFile='worki
     lastSolid1kgMass = pDF.findReactantMass(lastSolid1kgProduct, system)
     lastSolvent1kgMass = pDF.findSolventMass(tabFile)[1]
     lastFluid1kgOMolal = pDF.findFluidOMolal(logZiValue=lastValidSpeciesLogZi)
-    lastFluid1kgMass = pDF.findFluidMass(dewReaction.elements.loc[lastValidElementsLogZi],
+    lastFluid1kgMass = pDF.findFluidMass(dewReaction.elements.iloc[lastValidElementsLogZiIndex],
                                          lastSolvent1kgMass, inputType='Series',
                                          d0file=d0file, Omolal=lastFluid1kgOMolal)
 
@@ -354,7 +359,9 @@ def reactionByMass(reactant, fluid, solventMass, system, P, T, outputFile='worki
     # pyDEW.Reaction.fO2 has a memory issue - this is the correct method of obtaining fO2
     eq6Output = pyDEW.eq6_output.eq6output(fluid, tab_filepath='working/tab',
                                            output_filepath='working/output')
-    finalfO2 = eq6Output.table_pH['log fo2'].to_list()[lastValidOutputLogZiIndex]
+    finalfO2 = eq6Output.table_pH['log fo2'].iloc[lastValidElementsLogZiIndex]
+    initialpH = eq6Output.table_pH['ph'].iloc[0]
+    finalpH = eq6Output.table_pH['ph'].iloc[lastValidElementsLogZiIndex]
 
     # Dictionary to store the physical properties of the system
     physicalProperties = {
@@ -374,6 +381,8 @@ def reactionByMass(reactant, fluid, solventMass, system, P, T, outputFile='worki
         'final FRR' : finalFRR,
         'initial fluid fO2' : fluid.fO2,
         'final fluid fO2' : finalfO2,
+        'initial fluid pH' : initialpH,
+        'final fluid pH' : finalpH,
         'max log zi (pyDEW elements)' : lastValidElementsLogZi,
         'max log zi (pyDEW species and DEW output)' : lastValidSpeciesLogZi,
         'error' : ''
@@ -384,9 +393,32 @@ def reactionByMass(reactant, fluid, solventMass, system, P, T, outputFile='worki
     outputDict['Properties'] = physicalProperties
     outputDict['Solid'] = adjustedLastSolidProduct
     outputDict['Elements'] = dewReaction.elements.iloc[lastValidElementsLogZiIndex].to_dict()
-    outputDict['Species'] = dewReaction.species_concs.iloc[lastValidSpeciesLogZiIndex].to_dict()
+    outputDict['Species'] = dewReaction.species_concs.loc[lastValidSpeciesLogZi].to_dict()
     outputDict['Volumes'] = pDF.reactantToVolDF(adjustedLastSolidProduct,
                                                 system, P, T).iloc[0].to_dict()
+    
+    # Really annoyingly the elements and their solid solutions do not match up either to the logZi indices
+    # of the elements nor to each other. We need to check for clashes again. If those clashes exist, then we
+    # opt for the second option.
+    producedElements = dewReaction.minerals.loc[lastValidElementsLogZi]
+    producedSolidSolutions = dewReaction.solid_solutions.loc[lastValidElementsLogZi]
+    if isinstance(producedElements, pd.DataFrame):
+        producedElements = producedElements.iloc[-1]
+    if isinstance(producedSolidSolutions, pd.DataFrame):
+        producedSolidSolutions = producedSolidSolutions.iloc[-1]
+    
+    producedElementsCorrected = {k : (10**v) * solidModulate for k,v in producedElements.items()}
+    producedExport = {}
+    for i in producedElementsCorrected:
+        if '(SS)' in i:
+            systemEndmembers = system.solid_solutions[i]
+            for j in systemEndmembers:
+                endmemberProportion = producedSolidSolutions[j]
+                endmemberMoles = endmemberProportion * producedElementsCorrected[i]
+                producedExport[j] = endmemberMoles
+        else:
+            producedExport[i] = producedElementsCorrected[i]
+    outputDict['Produced'] = producedExport
     return outputDict
 
 
@@ -412,19 +444,21 @@ def combineOutputs(outputs, system):
     elementsList = []
     speciesList = []
     volumesList = []
-
+    producedList = []
     for i in range(len(outputs)):
         physicalList.append(pd.Series(outputs[i]['Properties']))
         solidList.append(pDF.reactantToDF(outputs[i]['Solid'], system).iloc[0])
         elementsList.append(pd.Series(outputs[i]['Elements']))
         speciesList.append(pd.Series(outputs[i]['Species']))
         volumesList.append(pd.Series(outputs[i]['Volumes']))
+        producedList.append(pd.Series(outputs[i]['Produced']))
     physicalDF = pd.concat(physicalList, axis=1).T
     solidDF = pd.concat(solidList, axis=1).T
     elementsDF = pd.concat(elementsList, axis=1).T
     speciesDF = pd.concat(speciesList, axis=1).T
     volumesDF = pd.concat(volumesList, axis=1).T
-    return [physicalDF, solidDF, elementsDF, speciesDF, volumesDF]
+    producedDF = pd.concat(producedList, axis=1).T
+    return [physicalDF, solidDF, elementsDF, speciesDF, volumesDF, producedDF]
 
 
 def combineTimes(combinedOutputs, startingTime=0, exportPath='export'):
@@ -440,7 +474,7 @@ def combineTimes(combinedOutputs, startingTime=0, exportPath='export'):
 
     RETURNS
     -------
-    Excel file comprising four sheets
+    Excel file comprising six sheets
     """
 
     # Add a time column
@@ -455,11 +489,14 @@ def combineTimes(combinedOutputs, startingTime=0, exportPath='export'):
     elementsOutputs = [i[2] for i in combinedOutputs]
     speciesOutputs = [i[3] for i in combinedOutputs]
     volumesOutputs = [i[4] for i in combinedOutputs]
+    producedOutputs = [i[5] for i in combinedOutputs]
+
     physicalExportDF = pd.concat(physicalOutputs)
     solidExportDF = pd.concat(solidOutputs)
     elementsExportDF = pd.concat(elementsOutputs)
     speciesExportDF = pd.concat(speciesOutputs)
     volumesExportDF = pd.concat(volumesOutputs)
+    producedExportDF = pd.concat(producedOutputs)
 
     # Fiddling to move the time column to the end if new minerals pop in
     columns = [col for col in solidExportDF.columns if col != 'Time'] + ['Time']
@@ -473,6 +510,7 @@ def combineTimes(combinedOutputs, startingTime=0, exportPath='export'):
         elementsExportDF.to_excel(writer, sheet_name='fluid_elements', index=False)
         speciesExportDF.to_excel(writer, sheet_name='fluid_species', index=False)
         volumesExportDF.to_excel(writer, sheet_name='mineral_volPER', index=False)
+        producedExportDF.to_excel(writer, sheet_name='produced_minerals', index=False)
     return
 
 
