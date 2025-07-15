@@ -972,7 +972,7 @@ def readfO2(tabFile):
 
 
 def condenseMinerals(mineralDF, system, cutoff=0.1, ordered=True, cumulative=True,
-                     retainTime=False):
+                     retainTime=False, condenseCPX=False):
     """
     Function to reduce solid solution endmember volume proportions into solid solution series
     mineral volumes, e.g., FORSTERITE and FAYALITE are reduced to OLIVINE(SS).
@@ -993,6 +993,9 @@ def condenseMinerals(mineralDF, system, cutoff=0.1, ordered=True, cumulative=Tru
     retainTime : boolean
         if there is a 'Time' column, this is retained in the final condensed mineral DataFrame.
         Default is True
+    condenseCPX : boolean
+        if there are two clinopyroxene solid solutions, this subroutine checks if the minerals
+        can be combined into one. Default is True
 
     RETURNS
     -------
@@ -1004,6 +1007,48 @@ def condenseMinerals(mineralDF, system, cutoff=0.1, ordered=True, cumulative=Tru
     systemSolidSolutions = list(system.solid_solutions.keys())
     seriesKeys = mineralDF.columns
 
+    if 'JADEITE(CPX)_volPER' in seriesKeys and 'ENSTATITE_CL_volPER' in seriesKeys:
+        pass
+    elif condenseCPX == False:
+        pass
+    else:
+        print('Adjusting cpx')
+        # If there is calcic cpx then use that solid solution
+        if 'JADEITE(CPX)_volPER' in seriesKeys:
+            print('Using calcic (di, he, jd)')
+            if 'DIOPSIDE_volPER' in seriesKeys:
+                mineralDF['DIOPSIDE(CPX)_volPER'] = [i + j for i, j in zip(
+                    mineralDF['DIOPSIDE(CPX)_volPER'], mineralDF['DIOPSIDE_volPER'])]
+                mineralDF = mineralDF.drop(columns=['DIOPSIDE_volPER'])
+            if 'HEDENBERGITE_volPER' in seriesKeys:
+                mineralDF['HEDENBERGITE(CPX)_volPER'] = [i + j for i, j in zip(
+                    mineralDF['HEDENBERGITE(CPX)_volPER'], mineralDF['HEDENBERGITE_volPER'])]
+                mineralDF = mineralDF.drop(columns=['HEDENBERGITE_volPER'])
+        
+        # If there is sub-calcic cpx then use that solid solution
+        elif 'ENSTATITE_CL_volPER' in seriesKeys:
+            print('Using subcalcic (di, he, en)')
+            if 'DIOPSIDE(CPX)_volPER' in seriesKeys:
+                mineralDF['DIOPSIDE_volPER'] = [i + j for i, j in zip(
+                    mineralDF['DIOPSIDE(CPX)_volPER'], mineralDF['DIOPSIDE_volPER'])]
+                mineralDF = mineralDF.drop(columns=['DIOPSIDE(CPX)_volPER'])
+            if 'HEDENBERGITE(CPX)_volPER' in seriesKeys:
+                mineralDF['HEDENBERGITE_volPER'] = [i + j for i, j in zip(
+                    mineralDF['HEDENBERGITE(CPX)_volPER'], mineralDF['HEDENBERGITE_volPER'])]
+                mineralDF = mineralDF.drop(columns=['HEDENBERGITE(CPX)_volPER'])
+    
+        # Otherwise default to calcic cpx
+        else:
+            if 'DIOPSIDE(CPX)_volPER' in seriesKeys or 'DIOPSIDE_volPER' in seriesKeys:
+                mineralDF['DIOPSIDE(CPX)_volPER'] = [i + j for i, j in zip(
+                    mineralDF['DIOPSIDE(CPX)_volPER'], mineralDF['DIOPSIDE_volPER'])]
+                mineralDF = mineralDF.drop(columns=['DIOPSIDE_volPER'])
+            if 'HEDENBERGITE(CPX)_volPER' in seriesKeys or 'HEDENBERGITE_volPER' in seriesKeys:
+                mineralDF['HEDENBERGITE(CPX)_volPER'] = [i + j for i, j in zip(
+                    mineralDF['HEDENBERGITE(CPX)_volPER'], mineralDF['HEDENBERGITE_volPER'])]
+                mineralDF = mineralDF.drop(columns=['HEDENBERGITE_volPER'])
+        seriesKeys = mineralDF.columns
+
     # PART 1: FIND THE SOLID SOLUTION SERIES
     keyMinerals = []
     for i in mineralDF.columns:
@@ -1011,8 +1056,11 @@ def condenseMinerals(mineralDF, system, cutoff=0.1, ordered=True, cumulative=Tru
             minString = i.replace('_volPER', '')
         else:
             continue
-        if '(CPX)' in minString:
-            keyMineral = 'CLINOPYROXENE(SS)'
+        if 'DIOPSIDE' in minString or 'HEDENBERGITE' in minString:
+            if '(CPX)' in minString:
+                keyMineral = 'CLINOPYROXENE(SS)'
+            else:
+                keyMineral = 'CPX_SUBCALCIC(SS)'
         elif '(KSP)' in minString:
             keyMineral = 'KFELDSPAR(SS)'
         elif minString not in systemMinerals:
