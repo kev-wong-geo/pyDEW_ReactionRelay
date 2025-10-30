@@ -1,5 +1,5 @@
 # Functions to subdivide relay function.
-# Last updated to include things for fluid and solvent mass: 22/10/2024, KW
+# Last updated to include things for fluid and solvent mass: 30/10/2025, KW
 
 import numpy as np
 import pyDEW
@@ -43,6 +43,10 @@ def formatFluid(molalities):
         'C' : 'CO3-2',
         'CL': 'CL-',
         'FE': 'FE+2'}
+    
+    # DMM does not have K, so if this isn't included then it will mess up.
+    if 'K' in molalities:
+        corrDict['K'] = 'K+'
 
     # Some molalities can drop too low - this checks for a change in molalities
     commonKeys = set(corrDict).intersection(set(formattedMolalities))
@@ -50,7 +54,7 @@ def formatFluid(molalities):
     return outputMolalities
 
 
-def createHybridFluid(proportions, P, T, database='EQ3_pickups_GS.xlsx',
+def createHybridFluid(proportions, P, T, database='EQ3_pickups_GS_FINAL.xlsx',
                       sheetNames=['DMM','MORB','Sediments']):
     """
     Function to create a hybrid linearly interpolated fluid from fluid endmember compositions.
@@ -131,7 +135,7 @@ def createHybridFluid(proportions, P, T, database='EQ3_pickups_GS.xlsx',
     return exportDict, exportfO2
 
 
-def failedReactionOutput(reactant, fluid, solventMass, system, P, T, errorTag=0,
+def failedReactionOutput(reactant, fluid, solventMass, system, P, T, database, errorTag=0,
                          d0file='working/data0'):
     """
     Function to return a compatible output if the reaction has returned an error.
@@ -150,6 +154,8 @@ def failedReactionOutput(reactant, fluid, solventMass, system, P, T, errorTag=0,
         pressure in bars
     T : float
         temperature in K
+    database : thermoengine.model.Database object
+        ThermoEngine model.database object for calculating delFMQ
     errorTag : int or None
         tag for error messages. 0: reaction has failed, 1: fluid-rock ratio too low
     d0file : string
@@ -199,6 +205,7 @@ def failedReactionOutput(reactant, fluid, solventMass, system, P, T, errorTag=0,
         'final fluid fO2' : fluid.fO2,
         'initial fluid pH' : fluid.pH,
         'final fluid pH' : fluid.pH,
+        'delFMQ' : pDF.FMQ(P, T, database),
         'max log zi (pyDEW elements)' : -999.0,
         'max log zi (pyDEW species and DEW output)' : -999.0,
         'error' : errorMessage
@@ -221,7 +228,7 @@ def failedReactionOutput(reactant, fluid, solventMass, system, P, T, errorTag=0,
     return outputDict
 
 
-def reactionByMass(reactant, fluid, solventMass, system, P, T, outputFile='working/output',
+def reactionByMass(reactant, fluid, solventMass, system, P, T, database, outputFile='working/output',
                    tabFile='working/tab', d0file='working/data0', **kwargs):
     """
     Function to perform a pyDEW calculation by mass (instead of relative to 1 kg of fluid).
@@ -240,6 +247,8 @@ def reactionByMass(reactant, fluid, solventMass, system, P, T, outputFile='worki
         pressure in bars
     T : float
         temperature in K
+    database : thermoengine.model.Database object
+        ThermoEngine model.database object for calculating delFMQ
     outputFile : string
         path to pyDEW.Reaction output file
     tabFile : string
@@ -277,6 +286,9 @@ def reactionByMass(reactant, fluid, solventMass, system, P, T, outputFile='worki
     # Sometimes an empty dataframe is returned - this flags it up
     if isinstance(dewReaction.minerals, pd.DataFrame) == False:
         raise pyDEW.core.RunError('Mineral output is not a pd.DataFrame')
+        
+    if isinstance(dewReaction.elements, pd.DataFrame) == False:
+        raise pyDEW.core.RunError('Elemental output is not a pd.DataFrame')
 
     lastReactionDF = pDF.findSolidComposition(outputFile, system, P, T)
 
@@ -383,6 +395,7 @@ def reactionByMass(reactant, fluid, solventMass, system, P, T, outputFile='worki
         'final fluid fO2' : finalfO2,
         'initial fluid pH' : initialpH,
         'final fluid pH' : finalpH,
+        'delFMQ' : pDF.FMQ(P, T, database),
         'max log zi (pyDEW elements)' : lastValidElementsLogZi,
         'max log zi (pyDEW species and DEW output)' : lastValidSpeciesLogZi,
         'error' : ''
@@ -400,17 +413,21 @@ def reactionByMass(reactant, fluid, solventMass, system, P, T, outputFile='worki
     # Really annoyingly the elements and their solid solutions do not match up either to the logZi indices
     # of the elements nor to each other. We need to check for clashes again. If those clashes exist, then we
     # opt for the second option.
+    producedExport = {}
     producedElements = dewReaction.minerals.loc[lastValidElementsLogZi]
-    producedSolidSolutions = dewReaction.solid_solutions.loc[lastValidElementsLogZi]
+
     if isinstance(producedElements, pd.DataFrame):
         producedElements = producedElements.iloc[-1]
-    if isinstance(producedSolidSolutions, pd.DataFrame):
-        producedSolidSolutions = producedSolidSolutions.iloc[-1]
-    
+
+        
     producedElementsCorrected = {k : (10**v) * solidModulate for k,v in producedElements.items()}
-    producedExport = {}
     for i in producedElementsCorrected:
         if '(SS)' in i:
+            # If solid solution, then we look up the solid solution ratios
+            producedSolidSolutions = dewReaction.solid_solutions.loc[lastValidElementsLogZi]
+            if isinstance(producedSolidSolutions, pd.DataFrame):
+                producedSolidSolutions = producedSolidSolutions.iloc[-1]
+
             systemEndmembers = system.solid_solutions[i]
             for j in systemEndmembers:
                 endmemberProportion = producedSolidSolutions[j]
@@ -582,6 +599,7 @@ def createUniformInput(reactant, system, reactantMass, pressures, temperatures, 
     inputDF = pd.concat([reactantDF] * len(pressures))
     inputDF['Pressure (bar)'] = pressures
     inputDF['Temperature (K)'] = temperatures
+    inputDF['Density (gcm-3)'] = [pDF.findReactantDensity(reactant, system, p, t) for p, t in zip(pressures, temperatures)]
     inputDF['Time'] = [startingTime]*len(pressures)
     inputDF.reset_index(inplace=True, drop=True)
     return inputDF
@@ -623,17 +641,24 @@ def createHeterogeneousInput(reactants, system, reactantMasses, intervals, press
     splitFractions = np.cumsum([i * len(pressures) / np.sum(intervals) for i in intervals])
     splitFractions = [round(i) for i in splitFractions]
     inputSubDF = []
+    densities = []
     for i in range(len(splitFractions)):
         if i == 0:
             rows = splitFractions[0]
+            rowPressures = pressures[0:rows]
+            rowTemperatures = temperatures[0:rows]
         else:
             rows = splitFractions[i] - splitFractions[i-1]
+            rowPressures = pressures[splitFractions[i-1]:splitFractions[i]]
+            rowTemperatures = temperatures[splitFractions[i-1]:splitFractions[i]]
         reactantMass = pDF.reactantToMass(reactants[i], reactantMasses[i], system)
         reactantDF = pDF.reactantToDF(reactantMass, system)
         inputSubDF.append(pd.concat([reactantDF] * rows))
+        densities.extend([pDF.findReactantDensity(reactants[i], system, p, t) for p, t in zip(rowPressures, rowTemperatures)])
     inputDF = pd.concat(inputSubDF)
     inputDF['Pressure (bar)'] = pressures
     inputDF['Temperature (K)'] = temperatures
+    inputDF['Density (gcm-3)'] = densities
     inputDF['Time'] = [startingTime]*len(pressures)
     inputDF.reset_index(inplace=True, drop=True)
     return inputDF
@@ -669,12 +694,12 @@ def relayInputFromOutput(outputFile, time):
     return inputReactant
 
 
-def decompressionRelay(startingColumn, startingFluid, startingfO2, system, timesteps=10,
+def decompressionRelay(startingColumn, startingFluid, startingfO2, system, database, timesteps=10,
                        startingTime=0, solventMass=None, startingFRR=1.0, terminalFRR=0.1,
                        molalityLimit=-18.0, exportPath='data/export',
                        outputToRead='working/output', tabToRead='working/tab',
                        startFromFile=None, combinedOutput=True,
-                       debugLabels=False, **kwargs):
+                       debugLabels=False, TCheck=False, **kwargs):  # Tcheck = True
     """
     Decompression relay as a function of time. This models a column of rock getting flushed with a
     fluid periodically from the base of the rock column.
@@ -692,6 +717,8 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, times
         fO2 of the fluid entering the system
     system : pyDEW.System object
         pyDEW.System for calculations
+    database : thermoengine.model.Database object
+        ThermoEngine model.database object for calculating delFMQ
     timesteps : int
         number of times to flush our solid with the fluid. Default is 10
     startingTime : int
@@ -718,6 +745,9 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, times
         if startFromFile, combine previous file with new results? Default is True
     debugLabels : boolean
         save EQ3/6 inputs/outputs to a folder in the working directory
+    TCheck : boolean
+        if T at t=0, n=0 is greater than 300 degC or less than 700 degC, set T to be 300 degC
+        or 700 degC respectively
     **kwargs for pyDEW.Fluid and pyDEW.Reaction functions
 
     RETURNS
@@ -739,6 +769,7 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, times
         if t == 0:
             if startFromFile is None:
                 workingColumn = startingColumn
+                startingReactantVolume = []
                 print('Starting from scratch...')
             else:
                 workingColumn = relayInputFromOutput(startFromFile, startingTime)
@@ -754,13 +785,26 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, times
 
         ##### DECOMPRESSION RELAY #####
         for n in range(len(workingColumn)):
+            # print(n)
             # if t == 2:
             #     print(t, n)
             workingParameters = workingColumn.iloc[n]
             workingReactant = pDF.DFtoReactant(workingParameters, system)
             workingT = workingParameters['Temperature (K)']
+            
+            # Subroutine in case the slab and wedge temperatures don't line up nicely
+            if n == 0 and TCheck:
+                if workingT > 973.15:
+                    workingT = 973.15
+                elif workingT < 573.15:
+                    workingT = 573.15
+                
             workingP = workingParameters['Pressure (bar)']
 
+            # for convenience, find the starting solid volumes
+            if t == 0:
+                startingReactantVolume.append(pDF.reactantToVolDF(workingReactant, system,
+                                                                  workingP, workingT))
             ##### FLUID #####
             # At start, get parameters from the input, else use results from last reaction
             if n == 0:
@@ -820,15 +864,20 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, times
 
                 reactionOutput = reactionByMass(workingReactant, workingFluid,
                                                 workingSolventMass, system,
-                                                workingP, workingT)
+                                                workingP, workingT, database)
                 calculations+=1
             except (KeyError, pyDEW.core.RunError):
                 errors+=1
-                if errorTag != 1  or errorTag != 2:
-                    errorTag = 0
-                reactionOutput = failedReactionOutput(workingReactant, workingFluid,
-                                                      workingSolventMass, system,
-                                                      workingP, workingT, errorTag)
+                if errorTag > 0
+                    # This does not account for if n=0, t=0 fluid fails to react
+                    reactionOutput = failedReactionOutput(workingReactant, workingFluid,
+                                                          workingSolventMass, system,
+                                                          workingP, workingT, database, errorTag)
+                else:
+                    # This does not account for if n=0, t=0 fluid fails to react
+                    reactionOutput = failedReactionOutput(workingReactant, workingFluid,
+                                                          workingSolventMass, system,
+                                                          workingP, workingT, database, errorTag=0)
             if debugLabels:
                 shutil.copy('working/input', f'working/debug/input_EQ6_{t}_{n}')
                 shutil.copy('working/output', f'working/debug/output_EQ6_{t}_{n}')
@@ -856,9 +905,13 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, times
             if 'Time' not in dfStartFluid.columns:
                 dfStartFluid['Time'] = [startingTime]
             print(f't={startingTime+t+1}, {calculations=}, {errors=} of which FRR {passes=}')
+            
+
+            dfStartSolidVolume = pd.concat(startingReactantVolume)
             with pd.ExcelWriter(exportPath+'_temp.xlsx', engine='openpyxl', mode='a') as writer:
                 dfStartSolid.to_excel(writer, sheet_name='starting_solid', index=False)
                 dfStartFluid.to_excel(writer, sheet_name='starting_fluid', index=False)
+                dfStartSolidVolume.to_excel(writer, sheet_name='starting_solid_vol', index=False)
 
             # If we need to stitch to another Excel file, we do that here, else just rename the temp
             if startFromFile != None:
