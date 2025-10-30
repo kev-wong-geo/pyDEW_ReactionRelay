@@ -155,7 +155,7 @@ def failedReactionOutput(reactant, fluid, solventMass, system, P, T, database, e
     T : float
         temperature in K
     database : thermoengine.model.Database object
-        ThermoEngine model.database object for calculating delFMQ
+        ThermoEngine model.database object for calculating FMQ
     errorTag : int or None
         tag for error messages. 0: reaction has failed, 1: fluid-rock ratio too low
     d0file : string
@@ -205,7 +205,7 @@ def failedReactionOutput(reactant, fluid, solventMass, system, P, T, database, e
         'final fluid fO2' : fluid.fO2,
         'initial fluid pH' : fluid.pH,
         'final fluid pH' : fluid.pH,
-        'delFMQ' : pDF.FMQ(P, T, database),
+        'FMQ' : pDF.FMQ(P, T, database),
         'max log zi (pyDEW elements)' : -999.0,
         'max log zi (pyDEW species and DEW output)' : -999.0,
         'error' : errorMessage
@@ -248,7 +248,7 @@ def reactionByMass(reactant, fluid, solventMass, system, P, T, database, outputF
     T : float
         temperature in K
     database : thermoengine.model.Database object
-        ThermoEngine model.database object for calculating delFMQ
+        ThermoEngine model.database object for calculating FMQ
     outputFile : string
         path to pyDEW.Reaction output file
     tabFile : string
@@ -395,7 +395,7 @@ def reactionByMass(reactant, fluid, solventMass, system, P, T, database, outputF
         'final fluid fO2' : finalfO2,
         'initial fluid pH' : initialpH,
         'final fluid pH' : finalpH,
-        'delFMQ' : pDF.FMQ(P, T, database),
+        'FMQ' : pDF.FMQ(P, T, database),
         'max log zi (pyDEW elements)' : lastValidElementsLogZi,
         'max log zi (pyDEW species and DEW output)' : lastValidSpeciesLogZi,
         'error' : ''
@@ -718,7 +718,7 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, datab
     system : pyDEW.System object
         pyDEW.System for calculations
     database : thermoengine.model.Database object
-        ThermoEngine model.database object for calculating delFMQ
+        ThermoEngine model.database object for calculating FMQ
     timesteps : int
         number of times to flush our solid with the fluid. Default is 10
     startingTime : int
@@ -931,3 +931,4 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, datab
             print(f'Data exported to: {exportPath}.xlsx')
             print('')
             return
+
