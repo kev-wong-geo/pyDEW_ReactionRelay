@@ -868,7 +868,7 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, datab
                 calculations+=1
             except (KeyError, pyDEW.core.RunError):
                 errors+=1
-                if errorTag > 0
+                if errorTag > 0:
                     # This does not account for if n=0, t=0 fluid fails to react
                     reactionOutput = failedReactionOutput(workingReactant, workingFluid,
                                                           workingSolventMass, system,
@@ -931,4 +931,5 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, datab
             print(f'Data exported to: {exportPath}.xlsx')
             print('')
             return
+
 
