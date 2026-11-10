@@ -34,6 +34,7 @@ def formatFluid(molalities):
 
     # pyDEW.Reaction and pyDEW.Fluid return differently cased outputs, this corrects for that
     formattedMolalities = {k.upper() : v for k,v in molalities.items()}
+
     corrDict = {
         'NA':  'NA+',
         'CA': 'CA+2',
@@ -42,12 +43,9 @@ def formatFluid(molalities):
         'SI': 'H4SIO4(AQ)',
         'C' : 'CO3-2',
         'CL': 'CL-',
-        'FE': 'FE+2'}
+        'FE': 'FE+2',
+        'K' : 'K+'}
     
-    # DMM does not have K, so if this isn't included then it will mess up.
-    if 'K' in molalities:
-        corrDict['K'] = 'K+'
-
     # Some molalities can drop too low - this checks for a change in molalities
     commonKeys = set(corrDict).intersection(set(formattedMolalities))
     outputMolalities = {corrDict[k] : formattedMolalities[k] for k in commonKeys}
@@ -332,7 +330,7 @@ def reactionByMass(reactant, fluid, solventMass, system, P, T, database, outputF
     lastSolid1kgDF.columns = lastSolid1kgHeaders
 
     # Set the headers up so we find mineral endmembers but not solid solution series
-    acceptableHeaders = [i.props['phase_name'] for i in system.minerals]
+    acceptableHeaders = [i.phase_name for i in system.minerals]
     acceptableHeaders.extend(['DIOPSIDE(CPX)', 'JADEITE(CPX)', 'HEDENBERGITE(CPX)',
                               'KFELDSPAR(KSP)', 'ALBITE(KSP)'])
     lastSolid1kgDF = lastSolid1kgDF[lastSolid1kgDF.columns.intersection(acceptableHeaders)]
@@ -758,6 +756,7 @@ def decompressionRelay(startingColumn, startingFluid, startingfO2, system, datab
     """
     print('-----RELAY STARTING-----')
     print('Relay function initiated')
+    print(solventMass)
     start = timer()
     t = 0
     allCombinedOutputs = []
